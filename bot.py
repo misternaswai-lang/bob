@@ -15,6 +15,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
+
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
@@ -29,7 +30,7 @@ class LinkState(StatesGroup):
     waiting = State()
 
 
-# ---------------- UI ----------------
+# ---------------- MENU ----------------
 def user_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📎 Отправить ссылку", callback_data="link")],
@@ -37,11 +38,24 @@ def user_menu():
     ])
 
 
-def admin_kb(uid: int):
+# ---------------- ADMIN KB ----------------
+def admin_link_kb(uid: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🟡 В работе", callback_data=f"link_work:{uid}"),
             InlineKeyboardButton(text="❌ Отказ", callback_data=f"link_reject:{uid}")
+        ],
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"link_approve:{uid}")
+        ]
+    ])
+
+
+def admin_video_kb(uid: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🟡 В работе", callback_data=f"video_work:{uid}"),
+            InlineKeyboardButton(text="❌ Отказ", callback_data=f"video_reject:{uid}")
         ],
         [
             InlineKeyboardButton(text="📤 Отправить видео", callback_data=f"video_send:{uid}")
@@ -55,13 +69,13 @@ async def start(m: Message):
     await m.answer("Меню:", reply_markup=user_menu())
 
 
-# ---------------- CALLBACKS ----------------
+# ---------------- CALLBACK ----------------
 @dp.callback_query()
 async def callbacks(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     data = call.data
 
-    # -------- USER --------
+    # ---------------- USER ----------------
     if data == "link":
         await state.set_state(LinkState.waiting)
         await call.message.answer("📎 Введите ссылку:")
@@ -70,27 +84,39 @@ async def callbacks(call: CallbackQuery, state: FSMContext):
         await bot.send_message(
             ADMIN_ID,
             f"🎬 ЗАПРОС ВИДЕО\n👤 @{call.from_user.username}\n🆔 {uid}",
-            reply_markup=admin_kb(uid)
+            reply_markup=admin_video_kb(uid)
         )
-        await call.message.answer("🎬 Отправлено администратору")
+        await call.message.answer("🎬 Отправлено")
 
-    # -------- ADMIN --------
+    # ---------------- ADMIN ----------------
     elif uid == ADMIN_ID:
 
+        # -------- LINKS --------
         if data.startswith("link_work:"):
             target = int(data.split(":")[1])
-            await bot.send_message(target, "🟡 Ваша заявка в работе")
-            await call.message.answer("OK")
+            await bot.send_message(target, "🟡 Ваша заявка в работе", reply_markup=user_menu())
 
         elif data.startswith("link_reject:"):
             target = int(data.split(":")[1])
-            await bot.send_message(target, "❌ Ваша заявка отклонена")
-            await call.message.answer("OK")
+            await bot.send_message(target, "❌ Ваша заявка отклонена", reply_markup=user_menu())
+
+        elif data.startswith("link_approve:"):
+            target = int(data.split(":")[1])
+            await bot.send_message(target, "✅ Ваша заявка одобрена", reply_markup=user_menu())
+
+        # -------- VIDEO (NO APPROVE LOGIC NEEDED) --------
+        elif data.startswith("video_work:"):
+            target = int(data.split(":")[1])
+            await bot.send_message(target, "🟡 Видео в работе", reply_markup=user_menu())
+
+        elif data.startswith("video_reject:"):
+            target = int(data.split(":")[1])
+            await bot.send_message(target, "❌ Видео отклонено", reply_markup=user_menu())
 
         elif data.startswith("video_send:"):
             target = int(data.split(":")[1])
             pending_video["uid"] = target
-            await call.message.answer("📤 Отправьте видео следующим сообщением")
+            await call.message.answer("📤 Отправьте видео")
 
     await call.answer()
 
@@ -102,11 +128,11 @@ async def link_input(m: Message, state: FSMContext):
 
     await bot.send_message(
         ADMIN_ID,
-        f"📎 ССЫЛКА НА МОДЕРАЦИЮ\n👤 @{m.from_user.username}\n🆔 {uid}\n🔗 {m.text}",
-        reply_markup=admin_kb(uid)
+        f"📎 ССЫЛКА\n👤 @{m.from_user.username}\n🆔 {uid}\n🔗 {m.text}",
+        reply_markup=admin_link_kb(uid)
     )
 
-    await m.answer("⏳ Отправлено на модерацию")
+    await m.answer("⏳ Отправлено на модерацию", reply_markup=user_menu())
     await state.clear()
 
 
@@ -125,7 +151,7 @@ async def send_video(m: Message):
     else:
         await bot.send_document(uid, m.document.file_id)
 
-    await bot.send_message(uid, "📤 Видео отправлено")
+    await bot.send_message(uid, "📤 Видео отправлено", reply_markup=user_menu())
 
     pending_video.clear()
 
