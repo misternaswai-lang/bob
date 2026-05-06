@@ -1,7 +1,7 @@
 import asyncio
 import os
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -15,115 +15,148 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-requests = {}
-waiting_reply = {}
+# хранение заявок
+links = {}
+video_requests = {}
+
+# ожидания
+waiting_link = {}
+waiting_admin_video = {}
 
 
-# ---------- STATES ----------
-class ReplyState(StatesGroup):
-    waiting_text = State()
+# ---------------- STATES ----------------
+class LinkState(StatesGroup):
+    waiting_link = State()
 
 
-# ---------- KEYBOARDS ----------
-def user_keyboard():
+class AdminVideoState(StatesGroup):
+    waiting_video = State()
+
+
+# ---------------- UI ----------------
+def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📹 Запросить видео", callback_data="request_video")],
-        [InlineKeyboardButton(text="❌ Отменить запрос", callback_data="cancel")]
+        [InlineKeyboardButton(text="📎 Отправить ссылку", callback_data="send_link")],
+        [InlineKeyboardButton(text="🎬 Запросить видео", callback_data="ask_video")]
     ])
 
 
-def admin_keyboard(user_id: int):
+def admin_video_kb(user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять", callback_data=f"approve:{user_id}")],
-        [InlineKeyboardButton(text="💬 Ответить", callback_data=f"reply:{user_id}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{user_id}")]
+        [
+            InlineKeyboardButton(text="🟡 В работе", callback_data=f"work:{user_id}"),
+            InlineKeyboardButton(text="❌ Отказ", callback_data=f"reject:{user_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📤 Отправить видео", callback_data=f"send_video:{user_id}")
+        ]
     ])
 
 
-# ---------- START ----------
+# ---------------- START ----------------
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer("Отправь ссылку или запрос:", reply_markup=user_keyboard())
+    await message.answer("Выберите действие:", reply_markup=main_menu())
 
 
-# ---------- USER ----------
-@dp.message(F.text)
-async def handle_text(message: Message):
-    uid = message.from_user.id
-    text = message.text
-
-    requests[uid] = {"text": text, "status": "pending"}
-
-    await message.answer("⏳ Отправлено на проверку")
-
-    await bot.send_message(
-        ADMIN_ID,
-        f"📩 Новый запрос\n\n"
-        f"👤 @{message.from_user.username}\n"
-        f"🆔 {uid}\n"
-        f"📎 {text}",
-        reply_markup=admin_keyboard(uid)
-    )
-
-
-# ---------- CALLBACK ----------
+# ---------------- CALLBACK USER ----------------
 @dp.callback_query()
-async def callback(call: CallbackQuery, state: FSMContext):
-    uid = call.from_user.id
+async def cb(call: CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
     data = call.data
 
-    if data == "request_video":
-        requests[uid] = {"type": "video", "status": "pending"}
+    # -------- LINK FLOW --------
+    if data == "send_link":
+        await state.set_state(LinkState.waiting_link)
+        await call.message.answer("📎 Отправьте ссылку:")
 
-        await call.message.answer("📹 Запрос отправлен")
+    # -------- VIDEO REQUEST --------
+    elif data == "ask_video":
+        video_requests[user_id] = {"status": "new"}
+
+        await call.message.answer("🎬 Запрос отправлен")
 
         await bot.send_message(
             ADMIN_ID,
-            f"📹 VIDEO REQUEST\n👤 {call.from_user.username}\n🆔 {uid}",
-            reply_markup=admin_keyboard(uid)
+            f"🎬 НОВЫЙ ЗАПРОС ВИДЕО\n👤 {call.from_user.username}\n🆔 {user_id}",
+            reply_markup=admin_video_kb(user_id)
         )
 
-    elif data == "cancel":
-        requests[uid] = {"status": "canceled"}
-
-        await call.message.answer("❌ Отменено")
-
-        await bot.send_message(ADMIN_ID, f"⚠️ User {uid} отменил запрос")
-
-    elif data.startswith("approve:"):
-        target = int(data.split(":")[1])
-        await bot.send_message(target, "✅ Принято")
-        await call.message.answer("OK")
-
-    elif data.startswith("reject:"):
-        target = int(data.split(":")[1])
-        await bot.send_message(target, "❌ Отклонено")
-        await call.message.answer("OK")
-
-    elif data.startswith("reply:"):
-        target = int(data.split(":")[1])
-        waiting_reply[uid] = target
-
-        await state.set_state(ReplyState.waiting_text)
-        await call.message.answer("Введите ответ:")
+    await call.answer()
 
 
-# ---------- ADMIN REPLY ----------
-@dp.message(ReplyState.waiting_text)
-async def reply(message: Message, state: FSMContext):
-    admin = message.from_user.id
+# ---------------- LINK HANDLER ----------------
+@dp.message(LinkState.waiting_link)
+async def link_input(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    link = message.text
 
-    if admin != ADMIN_ID:
+    links[user_id] = {"link": link, "status": "moderation"}
+
+    await message.answer("⏳ Видео на модерации")
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"📎 ССЫЛКА НА МОДЕРАЦИЮ\n👤 {message.from_user.username}\n🆔 {user_id}\n🔗 {link}\n\n"
+        f"Статус: модерация"
+    )
+
+    await state.clear()
+    await message.answer("Выберите действие:", reply_markup=main_menu())
+
+
+# ---------------- ADMIN ACTIONS ----------------
+@dp.callback_query()
+async def admin_actions(call: CallbackQuery):
+    data = call.data
+
+    if call.from_user.id != ADMIN_ID:
         return
 
-    user_id = waiting_reply.get(admin)
+    # в работе
+    if data.startswith("work:"):
+        uid = int(data.split(":")[1])
+        await call.message.answer("🟡 Отмечено как в работе")
 
-    await bot.send_message(user_id, f"💬 Ответ:\n{message.text}")
+    # отказ
+    elif data.startswith("reject:"):
+        uid = int(data.split(":")[1])
+        await bot.send_message(uid, "❌ Ваш запрос отклонён")
+        await call.message.answer("Отклонено")
 
-    await message.answer("Отправлено")
-    await state.clear()
+    # отправка видео
+    elif data.startswith("send_video:"):
+        uid = int(data.split(":")[1])
+
+        waiting_admin_video["uid"] = uid
+
+        await call.message.answer("Отправьте видео следующим сообщением:")
 
 
+# ---------------- ADMIN SEND VIDEO ----------------
+@dp.message(F.video | F.document | F.text)
+async def admin_send_video(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    uid = waiting_admin_video.get("uid")
+    if not uid:
+        return
+
+    if message.video:
+        await bot.send_video(uid, message.video.file_id)
+
+    elif message.document:
+        await bot.send_document(uid, message.document.file_id)
+
+    else:
+        await bot.send_message(uid, f"📤 Видео/сообщение:\n{message.text}")
+
+    await bot.send_message(uid, "📤 Видео отправлено админом")
+    waiting_admin_video.clear()
+
+
+# ---------------- RUN ----------------
 async def main():
     await dp.start_polling(bot)
 
